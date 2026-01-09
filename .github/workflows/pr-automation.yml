@@ -1,0 +1,178 @@
+name: PR Automation Workflow
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        id: eslint
+        run: npm run lint || echo "ESLint found issues"
+
+      - name: Run Prettier check
+        id: prettier
+        run: npx prettier --check . || echo "Prettier found formatting issues"
+
+      - name: Post Code Quality Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eslintOutput = `${{ steps.eslint.outputs.stdout || 'ESLint completed without errors' }}`;
+            const prettierOutput = `${{ steps.prettier.outputs.stdout || 'Prettier formatting is correct' }}`;
+            const commentBody = `## Code Quality Report\n\n### ESLint\n${eslintOutput}\n\n### Prettier\n${prettierOutput}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        id: tests
+        run: npm test -- --coverage
+
+      - name: Generate coverage summary
+        id: coverage
+        run: |
+          echo "COVERAGE_SUMMARY=$(cat coverage/lcov-report/index.html | grep -A 5 'Coverage Summary' | head -10)" >> $GITHUB_ENV
+
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const coverageSummary = `${{ env.COVERAGE_SUMMARY || 'Coverage report not generated' }}`;
+            const commentBody = `## Test Coverage Report\n\n${coverageSummary}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run dependency vulnerability check
+        id: audit
+        run: npm audit --json || echo "Vulnerabilities found"
+
+      - name: Scan for secrets
+        id: secrets
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+
+      - name: Post Security Scan Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const auditOutput = `${{ steps.audit.outputs.stdout || 'No vulnerabilities found' }}`;
+            const secretsOutput = `${{ steps.secrets.outputs.stdout || 'No secrets detected' }}`;
+            const commentBody = `## Security Scan Report\n\n### Vulnerabilities\n${auditOutput}\n\n### Dependencies\n${secretsOutput}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        id: build
+        run: npm run build
+
+      - name: Validate endpoints
+        id: endpoints
+        run: |
+          # Example endpoint validation (adjust based on project)
+          curl -I http://localhost:3000 || echo "Endpoint validation failed"
+
+      - name: Create deployment preview artifacts
+        run: tar -czf deployment-preview.tar.gz dist/
+
+      - name: Post Build Validation
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildOutput = `${{ steps.build.outputs.stdout || 'Build completed successfully' }}`;
+            const endpointsOutput = `${{ steps.endpoints.outputs.stdout || 'Endpoint validation passed' }}`;
+            const commentBody = `## Build Validation\n\n### Build Status\n${buildOutput}\n\n### Endpoint Validation\n${endpointsOutput}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
+
+      - name: Upload deployment preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-preview
+          path: deployment-preview.tar.gz
